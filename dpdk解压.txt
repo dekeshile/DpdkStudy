@@ -1,8 +1,0 @@
-windows
-C:\Users\w-pc>cd D:\360安全浏览器下载
-
-C:\Users\w-pc>D:
-
-D:\360安全浏览器下载>start winrar x -y dpdk-19.11.tar.xz
-linux
-解压tar.xz文件：先 xz -d xxx.tar.xz 将 xxx.tar.xz解压成 xxx.tar 然后，再用 tar xvf xxx.tar来解包。
