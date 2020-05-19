@@ -246,6 +246,14 @@ lpm_main_loop(__attribute__((unused)) void *dummy)
 			//	printf("无包可收\n");
 				continue;
 			}
+			printf("----------------打印hash值-------------------\n");
+			printf("nx_rx:%d\n",nb_rx);
+			int j;
+			for(j=0; j<nb_rx; j++){
+				//if(pkts_burst[i]->ol_flags & PKT_RX_RSS_HASH)
+				printf("%d\n",j);
+				printf(" - RSS hash=0x%x \n", (unsigned int) pkts_burst[j]->hash.rss);
+			}
 
 #if defined RTE_ARCH_X86 || defined RTE_MACHINE_CPUFLAG_NEON \
 			 || defined RTE_ARCH_PPC_64
