@@ -1,0 +1,1 @@
+const char net_hns3_vf_pmd_info[] __attribute__((used)) = "PMD_INFO_STRING= {\"name\" : \"net_hns3_vf\", \"kmod\" : \"* igb_uio | vfio-pci\", \"pci_ids\" : [[6629, 41518, 65535, 65535],[6629, 41519, 65535, 65535] ]}";

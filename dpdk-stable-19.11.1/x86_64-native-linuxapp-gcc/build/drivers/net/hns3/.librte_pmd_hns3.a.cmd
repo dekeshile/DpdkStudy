@@ -1,0 +1,1 @@
+cmd_librte_pmd_hns3.a = ar crDs librte_pmd_hns3.a hns3_ethdev.o hns3_ethdev_vf.o hns3_cmd.o hns3_mbx.o hns3_rxtx.o hns3_rss.o hns3_flow.o hns3_fdir.o hns3_intr.o hns3_stats.o hns3_regs.o hns3_dcb.o hns3_mp.o 

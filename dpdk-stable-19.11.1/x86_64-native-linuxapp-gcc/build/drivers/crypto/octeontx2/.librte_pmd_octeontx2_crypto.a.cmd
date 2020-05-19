@@ -1,0 +1,1 @@
+cmd_librte_pmd_octeontx2_crypto.a = ar crDs librte_pmd_octeontx2_crypto.a otx2_cryptodev.o otx2_cryptodev_capabilities.o otx2_cryptodev_hw_access.o otx2_cryptodev_mbox.o otx2_cryptodev_ops.o 
