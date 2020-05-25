@@ -132,24 +132,25 @@ void dpdk_init_main()
 
 bool CCaputrePack::Initialize()
 {
-    if(m_b_load_pcap_file)
+    if(m_b_load_pcap_file)//从pcap中读取流量
     {
+        //dpdk初始化端口
         dpdk_init(m_nInterfaceId-1);
+        //pcap初始化
         PcapRunInit();
         if(LoadPcapFile() >= 0)
         {
             m_thread.reset(new boost::thread(boost::bind(&CCaputrePack::PcapRun,this)));
-        }
-        else
+        }   
+    }
+    else//从网卡直接读取流量
+    {
+        dpdk_init(m_nInterfaceId-1);
+        for(int i=0;i<prehand_threads[m_nInterfaceId];i++)
         {
-            dpdk_init(m_nInterfaceId-1);
-            for(int i=0;i<prehand_threads[m_nInterfaceId];i++)
-            {
-                std::thread dpdk_run_thread(boost::bind(&CCaputurePack::DpdkRun,this,i));
-                dpdk_run_thrad.detach();
-            }
+            std::thread dpdk_run_thread(boost::bind(&CCaputurePack::DpdkRun,this,i));
+            dpdk_run_thrad.detach();
         }
-        
     }
 }
 
@@ -335,7 +336,8 @@ void CCaputrePack::DpdkRun(uint16_t queue_id)
             gettimeofday(&ts,0);
             mbufs[i]->udata64 = ((uint64)ts.tv_sec << 32) | (uint64_t)ts_usec;
         }
-        int ret = capture_ring->EnquueBurst((void* const*)mbufs,nb_rx,NULL);
+        //入队
+        int ret = capture_ring->EnqueueBurst((void* const*)mbufs,nb_rx,NULL);
         if(nb_rx != ret)
         {
             droped_packets += nb_rx - ret;
