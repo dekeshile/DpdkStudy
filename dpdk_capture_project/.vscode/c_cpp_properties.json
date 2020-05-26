@@ -1,0 +1,29 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "c:/mingw/include/**",
+                "c:/mingw/bin/../lib/gcc/mingw32/9.2.0/include/c++",
+                "c:/mingw/bin/../lib/gcc/mingw32/9.2.0/include/c++/mingw32",
+                "c:/mingw/bin/../lib/gcc/mingw32/9.2.0/include/c++/backward",
+                "c:/mingw/bin/../lib/gcc/mingw32/9.2.0/include",
+                "c:/mingw/bin/../lib/gcc/mingw32/9.2.0/../../../../include",
+                "c:/mingw/bin/../lib/gcc/mingw32/9.2.0/include-fixed",
+                "E:/code/dpdk/DpdkStudy/dpdk-stable-19.11.1/lib/librte_eal/**",
+                "E:/code/dpdk/DpdkStudy/dpdk-stable-19.11.1/x86_64-native-linuxapp-gcc/include"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "compilerPath": "C:\\MinGW\\bin\\gcc.exe",
+            "cStandard": "c11",
+            "cppStandard": "c++11",
+            "intelliSenseMode": "gcc-x64"
+        }
+    ],
+    "version": 4
+}
