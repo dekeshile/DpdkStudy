@@ -592,7 +592,9 @@ main(int argc, char **argv)
 	rx_lcore_id = 0;
 	qconf = NULL;
 
-	/* Initialize the port/queue configuration of each logical core */
+	/* Initialize the port/queue configuration of each logical core 
+		将核绑定给对应的接收端口（这里一个端口一个队列）
+	*/
 	RTE_ETH_FOREACH_DEV(portid) {
 		/* skip ports that are not enabled */
 		if ((l2fwd_enabled_port_mask & (1 << portid)) == 0)

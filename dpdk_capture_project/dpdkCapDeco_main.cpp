@@ -9,6 +9,10 @@
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
 #include <rte_debug.h>
+#include <rte_ether.h>
+#include <rte_ethdev.h>
+
+#include "decode.h"
 
 #define MAX_TX_QUEUE_PER_PORT RTE_MAX_ETHPORTS
 #define MAX_RX_QUEUE_PER_PORT 128
@@ -22,15 +26,47 @@
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
 
+/* Number of mbufs in mempool that is created */
+#define NB_MBUF       (8192 * 16)
 
-int jumbo_frame = 1;
+/*
+ * Configurable number of RX/TX ring descriptors
+ */
+#define RTE_TEST_RX_DESC_DEFAULT 1024
+#define RTE_TEST_TX_DESC_DEFAULT 1024
+static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
+static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
 
+static int m_b_load_pcap_file = 1;
 
 
 static struct rte_mempool *mbuf_pools[RTE_MAX_ETHPORTS];
+/* Mempool for mbufs */
+static struct rte_mempool * pktmbuf_pool = NULL;
 
 
-int  LoadPcapFile()
+/* Options for configuring ethernet port */
+static struct rte_eth_conf port_conf = {
+	.rxmode = {
+		.mq_mode = ETH_MQ_RX_RSS,	/* 使用 RSS 分流 */
+		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
+		.split_hdr_size = 0,
+		.offloads = DEV_RX_OFFLOAD_CHECKSUM,
+	},
+	.rx_adv_conf = {
+		.rss_conf = {
+			.rss_key = NULL,/* 留给 网卡设置 rss_key */  // (uint8_t*)rss_intel_key;
+			.rss_hf = ETH_RSS_IP,/* 根据 l3 tuple 计算 rss hash */
+		},
+	},// 为设备使能RSS
+	.txmode = {
+		.mq_mode = ETH_MQ_TX_NONE,
+	},
+};
+
+
+
+int LoadPcapFile()
 {
     if(send_len < 60)
         send_len = 60;
@@ -55,7 +91,7 @@ int  LoadPcapFile()
             int rc = pcap_next_ex(pt,&h,(const u_char **)&pkt);
             if(rc <= 0)
                 break;
-            struct pcap_packet *p = (struct pcap_packet *)malloc(sizeof(struct pcap_packet));
+            struct pcap_packet *p = (struct pcap_packet *)malloc(sizeof(struct pcap_packet*));
             if(p)
             {
                 p->len = h->caplen;
@@ -64,18 +100,10 @@ int  LoadPcapFile()
                 if(p->pkt != NULL)
                 {
                     memcpy(p->pkt,pkt,p->len);
-                    #if 0
-                    string tep((char*)pkt,p->len);
-                    if(tep.find("POST /yd-bpm-web/login/dologin.action") != std::string::npos)
-                    {
-                        static unsigned long c = 0;
-                        LOG_MSG(LOG_LEVEL_ERROR,"=======%u:%s",++c,tep.c_str());
-                    }
-                    #endif
                 }
                 else
                 {
-                   LOG_MSG(LOG_LEVEL_ERROR,"Not enough memory");
+                   printf("Not enough memory\n");
                    break;
                 }
                 headinfo h_info;
@@ -93,20 +121,20 @@ int  LoadPcapFile()
             }
             else
             {
-               LOG_MSG(LOG_LEVEL_ERROR,"Not enough memrory");
+               printf("Not enough memory\n");
                break;
             }
             num_pcap_pkts++;
             bytes_pcap += p->len;
         }
         pcap_close(pt);
-        LOG_MSG(LOG_LEVEL_NOTICE,"Read %d packets from pcap file %s",num_pcap_pkts,m_pcap_file.c_str());
+        printf("Read %d packets from pcap file %s\n",num_pcap_pkts,m_pcap_file.c_str());
         last->next = pkt_head;
     }
     else
     {
-        LOG_MSG(LOG_LEVEL_ERROR,"Unable to open file %s",m_pcap_file.c_str());
-        return(-1);
+       printf("Unable to open file %s\n",m_pcap_file.c_str());
+    return(-1);
     }
     uint64_t packet_avg_size = bytes_pcap/num_pcap_pkts;
     uint64_t pps =((1000*1000000ULL)/packet_avg_size)*gbit_s)/100;
@@ -119,7 +147,8 @@ int  LoadPcapFile()
     return(0);
 }
 
-void dpdk_init_main()
+
+void dpdk_init()
 {
     uint32_t _core_id = 0;
     unsigned long coreMask= 0;
@@ -127,164 +156,112 @@ void dpdk_init_main()
     char coreMaskBuf[64]{0};
     snprintf(coreMaskBuf,sizeof(coreMaskBuf),"0x%1x",coreMask);
     int argc = 3;
-    char *argv[] = {"./udprobe","-c",coreMask};
+    //dpdk EAL的参数
+    char *argv[] = {"./udprobe",//运行程序
+                        "-c",
+                        coreMask};
 
     int ret = rte_eal_init(argc,argv);
     if( ret <0 )
         rte_exit(EXIT_FAILURE,"Error with EAL initialization\n");
-}
+    argc -= ret;
+	argv += ret;
 
-bool Initialize()
-{
-    if(m_b_load_pcap_file)//从pcap中读取流量
-    {
-        //dpdk初始化端口
-        dpdk_init(m_nInterfaceId-1);
-        //pcap初始化
-        PcapRunInit();
-        if(LoadPcapFile() >= 0)
-        {
-            m_thread.reset(new boost::thread(boost::bind(&CCaputrePack::PcapRun,this)));
-        }   
+
+    //创建mbuf_pools池
+	pktmbuf_pool = rte_pktmbuf_pool_create("mbuf_pool", NB_MBUF,
+		MEMPOOL_CACHE_SZ, 0, MBUF_DATA_SZ, rte_socket_id());
+	if (pktmbuf_pool == NULL) {
+		rte_exit(EXIT_FAILURE, "Could not initialise mbuf pool\n");
+		return -1;
+	}
+
+   /* Initialise each port */
+	RTE_ETH_FOREACH_DEV(port) {
+        //端口初始化
+        if(port_init(portid,mbuf_pools[portid]) != 0)
+            rte_exit(EXIT_FAILURE,"Cannot init port %d \n",portid);
     }
-    else//从网卡直接读取流量
-    {
-        dpdk_init(m_nInterfaceId-1);
-        for(int i=0;i<prehand_threads[m_nInterfaceId];i++)
-        {
-            std::thread dpdk_run_thread(boost::bind(&CCaputurePack::DpdkRun,this,i));
-            dpdk_run_thrad.detach();
-        }
-    }
-}
 
-void dpdk_init(uint8_t portid)
-{
-    unsigned nb_ports;//网口个数
-    nb_ports = rte_eth_dev_count();//获取当前有效网口的个数
-    char mbuf_pool_name[128]{0};
 
-    snprintf(mbuf_pool_name,128,"MBUF_POOL_%d",portid);
-    //创建mbuf_pools池renjiguanxi qingliganjing 
-    mbuf_pools[portid] = rte_pktmbuf_pool_create(mbuf_pool_name,nb_mbuf,MEMPOOL_CACHE_SIZE,0,
-                                            RTE_MBUF_DEFAULT_BUF_SIZE,rte_socket_id());
-    if(mbuf_pools[portid] == NULL)
-        rte_exit(EXIT_FAILURE,"Cannot create mbuf pool\n");
-    //端口初始化
-    if(port_init(portid,mbuf_pools[portid]) != 0)
-        rte_exit(EXIT_FAILURE,"Cannot init port %d \n",portid);
-    std::thread dpdk_stat_thread(DpdkStatThreadRun);
-    dpdk_stat_thread.detach();
+    //检查链路状态
+  //  check_all_ports_link_status(ports_mask);
+
+ //   std::thread dpdk_stat_thread(DpdkStatThreadRun);
+  //  dpdk_stat_thread.detach();
+
 }
 
 //dpdk端口初始化
 static int port_init(uint8_t port,struct rte_mempool *mbuf_pool)
 {
     const uint16_t rx_rings = prehand_threads[port+1],tx_rings = 1;
-    uint16_t nb_rxd = RX_RING_SIZE;
-    uint16_t nb_txd = TX_RING_SIZE;
+    struct rte_eth_dev_info dev_info;
+    struct rte_eth_conf local_port_conf = port_conf;
     int retval;
-    static struct rte_eth_conf port_conf;
-    port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;//开启RSS功能
-    port_conf.rx_adv_conf.rss_conf.rss_key = (uint8_t*)rss_intel_key;//使用的hash key是rss_intel_key
-    port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IP|ETH_RSS_PORT;
-
-    //是否接受巨帧
-    if(jumbo_frame)
-    {
-        port_conf.rxmode.max_rx_pkt_len = ETHER_MAX_LEN*10;
-        port_conf.rxmode.jumbo_frame = 1;
-    }
-    else
-    {
-        port_conf.rxmode.max_rx_pkt_len = ETHER_MAX_LEN;
-        port_conf.rxmode.jumbo_frame = 0;
-    }
+    static struct rte_eth_rxconf  rxq_conf;
+    struct rte_eth_txconf txq_conf;
+  
     if(port >= rte_eth_dev_count())
         return -1;
+
+    //配置dpdk网口的接收队列数和发送队列数
+	ret = rte_eth_dev_configure(port, 1, 1, &local_port_conf);
+	if (ret < 0)
+		rte_exit(EXIT_FAILURE, "Could not configure port%u (%d)\n",
+		            (unsigned)port, ret);
+
     retval = rte_eth_dev_adjust_nb_rx_tx_desc(port,&nb_rxd,&nb_txd);
     if(retval != 0)
         return retval;
-    if(port_conf.rxmode.jumbo_frame)
-    {
-        if(rte_eth_dev_set_mtu(port,port_conf.rxmode.max_rx_pkt_len)!=0)
-        {
-            // LOG_MSG(LOG_LEVEL_ERROR,"port %d Set MTU=[%d] failed.",port,port_conf.rxmode.max_rx_pkt_len);
-             printf("port %d Set MTU=[%d] failed.\n",port,port_conf.rxmode.max_rx_pkt_len);
 
-        }
-        static struct rte_eth_rxconf  rxconf;
-        rxconf.rx_free_thresh = 32;
-        for(uint16_t q = 0;q<rx_rings;q++)
+    ret = rte_eth_dev_info_get(port, &dev_info);
+	printf("端口：%d默认的最大接收队列数：%d\n",port,dev_info.max_rx_queues);
+
+    rxq_conf = dev_info.default_rxconf;
+	rxq_conf.offloads = local_port_conf.rxmode.offloads;
+
+    for(uint16_t q = 0;q<rx_rings;q++)
+    {
+        //对每一个端口，分配和建立一个相应的接收队列
+        retval = rte_eth_rx_queue_setup(port,0,nb_rxd,rte_eth_dev_socket_id(port),&rxq_conf,mbuf_pool);
+        if(rteval <0 )
         {
-            //对每一个接收环，建立一个接收队列
-            retval = rte_eth_rx_queue_setup(port,q,nb_rxd,rte_eth_dev_socket_id(port),&rxconf,mbuf_pool);
-            if(rteval <0 )
-            {
-                rte_exit(EXIT_FAILURE,"rte_eth_rx_queue_setup: err=%d, port=%d\n",ret, portid);
-                return retval;
-            }
-        }
-        for(uint16_t q = 0;q<tx_rings;q++)
-        {
-              //对每一个发送环，建立一个发送队列
-            retval = rte_eth_tx_queue_setup(port,q,nb_txd,rte_eth_dev_socket_id(port),NULL);
-            if(retval <0 )
-            {
-                rte_exit(EXIT_FAILURE,"rte_eth_rx_queue_setup: err=%d, port=%d\n",ret, portid);
-                return retval;
-            }
-        }
-        //开启端口
-        retval = rte_eth_dev_start(port);
-        if(retval < 0)
-        {
-            printf("start  dpdk dev failed!!\n");
+            rte_exit(EXIT_FAILURE,"rte_eth_rx_queue_setup: err=%d, port=%d\n",ret, portid);
             return retval;
         }
-        //端口开启混杂模式
-        rte_eth_promiscuous_enable(port);  
     }
+
+    txq_conf = dev_info.default_txconf;
+	txq_conf.offloads = local_port_conf.txmode.offloads;
+    for(uint16_t q = 0;q<tx_rings;q++)
+    {
+         //对每一个端口，分配和建立一个相应的接收队列
+        retval = rte_eth_tx_queue_setup(port,0,nb_txd,rte_eth_dev_socket_id(port),&txq_conf);
+        if(retval <0 )
+        {
+            rte_exit(EXIT_FAILURE,"rte_eth_rx_queue_setup: err=%d, port=%d\n",ret, portid);
+            return retval;
+        }
+    }
+
+    //端口开启混杂模式
+    ret = rte_eth_promiscuous_enable(port);
+	if (ret != 0)
+		rte_exit(EXIT_FAILURE,"Could not enable promiscuous mode for port%u: %s\n",
+				port, rte_strerror(-ret));
+
+    //开启端口
+    retval = rte_eth_dev_start(port);
+    if(retval < 0)
+    {
+        printf("start  dpdk dev failed!!\n");
+        return retval;
+    }
+    
     return 0;
 }
 
-void dpdk_stat(unsigned portid)
-{
-    struct rte_eth_stats eth_stats;
-    rte_eth_stats_get(portid-1,&eth_stats);
-    if(capcounters[portid].flag == 0)
-    {
-        capcounters[portid].prev_droped_packets = eth_stats.imissed;
-        capcounters[portid].prev_error_packets= eth_stats.rx_nombuf;
-        capcounters[portid].prev_grain_bytes = eth_stats.ibytes;
-        capcounters[portid].prev_grain_packets = eth_stats.ipackets;
-        capcounters[portid].flag = 1;
-    }
-    else
-    {
-        unsigned long device_droped = eth_stats.imissed - capcounters[portid].prev_droped_packets;
-        unsigned long device_errord = eth_stats.rx_nombuf - capcounters[portid].prev_error_packets;
-        unsigned long cur_grain_traffic = eth_stats.ibytes - capcounters[portid].prev_grain_bytes;
-        unsigned long cur_grain_packets = eth_stats.ipackets -  capcounters[portid].prev_grain_packets;
-        unsigned long avgpkts = cur_grain_packets >> 4;
-        unsigned long avgbyte = cur_grain_traffic >> 4;
-        double avggbps = (double)avgbyte / ((1000*1000*1000) >> 3);
-        LOG_MSG(device_droped > 0 ? LOG_LEVEL_ERROR : LOG_LEVEL_INFO,
-        "[Watchout][Capture][iface:%d][queue:%d][speed:%.31fGbps][packet:%lupkt/s]"
-        "[cur_grain_traffic:%lu][lost:0%%][pkts_in:%lu][mbuf_error:%lu][droped:%lu]",
-        portid,
-        g_queue_num[portid],
-        avggbps,
-        avgpkts,
-        cur_grain_traffic,
-        eth_stats.ipackets,device_errord,device_droped
-        );
-        capcounters[portid].prev_droped_packets = eth_stats.imissed;
-        capcounters[portid].prev_error_packets= eth_stats.rx_nombuf;
-        capcounters[portid].prev_grain_bytes = eth_stats.ibytes;
-        capcounters[portid].prev_grain_packets = eth_stats.ipackets;
-    } 
-}
 
 void DpdkRun(uint16_t queue_id)
 {
@@ -309,22 +286,10 @@ void DpdkRun(uint16_t queue_id)
         printf("capture queue is null,queue id:%u",queue_id);
         exit(-1);
     }
-    struct ether_addr addr;
-    rte_eth_macaddr_get(dpdk_port_id,&addr);
-    printf("Port %u MAC: %02x  %02x  %02x  %02x  %02x  %02x\n",
-         (unsigned)dpdk_port_id,
-         addr_addr_bytes[0],addr.addr_bytes[1],
-         addr_addr_bytes[2],addr.addr_bytes[3],
-         addr_addr_bytes[4],addr.addr_bytes[5]
-         );
+
     while(rCaptureThreadStartFlag)
     {
-        if(0 == g_enable_diable_probe_flag)
-        {
-            sleep(1);
-            LOG_MSG(LOG_LEVEL_NOTICE,"upprobe be in inactive state!");
-            continue;   
-        }
+       
         //接收网卡流量数据
         nb_rx = rte_eth_rx_burst(dpdk_port_id,queue_id,mbufs,BURST_SIZE);
         if(nb_rx <= 0)
@@ -424,6 +389,7 @@ void do_handle_packet(struct rte_mbuf *mbuf)
             LOG3_MSG(5000000,LOG_LEVEL_WARN,"[Watchout] gFilterRingQueue size:%d is full!!",gFilterRingQueue->get_status());
         }
         PushTotal++;
+        //入队
         if(!(*m_decode_queue)[hash_rss]->Enqueue((void*)packet))
         {
              LOG3_MSG(10*1000*1000,LOG_LEVEL_NOTICE,
@@ -499,4 +465,37 @@ void loop()
 int main()
 {
 
+    uint16_t nb_ports;
+    nb_ports = rte_eth_dev_count_avail();//获取当前有效网口的个数
+    if (nb_ports == 0)
+		rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
+
+    //dpdk环境初始化
+    dpdk_init();
+
+    //若从pcap文件读取流量，则交给PcapRun处理
+    if(m_b_load_pcap_file)
+    {
+        //pcap初始化
+        PcapRunInit();
+        if(LoadPcapFile() >= 0)
+        {
+            prehandle_loop();
+           // m_thread.reset(new boost::thread(boost::bind(PcapRun,this)));
+        }   
+    }else //若从网卡直接读取流量，则交给DpdkRun处理
+    {
+
+        DpdkRun();
+
+        //每个端口对应一个线程来处理
+        /*
+        for(int i=0;i<prehand_threads[nb_ports];i++)
+        {
+            std::thread dpdk_run_thread(boost::bind(DpdkRun,this,i));
+            dpdk_run_thrad.detach();
+        }*/
+    
+    }
 }
+

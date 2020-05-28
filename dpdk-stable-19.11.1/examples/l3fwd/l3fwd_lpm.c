@@ -43,8 +43,8 @@ struct ipv6_l3fwd_lpm_route {
 
 /* 198.18.0.0/16 are set aside for RFC2544 benchmarking (RFC5735). */
 static struct ipv4_l3fwd_lpm_route ipv4_l3fwd_lpm_route_array[] = {
-	{RTE_IPV4(192, 168, 1, 0), 24, 1},//包的目的地址是192.168.1.xxx的，发往端口1
-	{RTE_IPV4(192, 168, 2, 0), 24, 2},//包的目的地址是192.168.2.xxx的，发往端口2
+	{RTE_IPV4(192, 168, 1, 0), 24, 0},//包的目的地址是192.168.1.xxx的，发往端口1
+	{RTE_IPV4(192, 168, 2, 0), 24, 1},//包的目的地址是192.168.2.xxx的，发往端口2
 	{RTE_IPV4(192, 168, 3, 0), 24, 2},
 	/*
 	{RTE_IPV4(198, 18, 0, 0), 24, 0},

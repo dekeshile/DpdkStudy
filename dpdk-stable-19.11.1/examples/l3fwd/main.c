@@ -910,6 +910,7 @@ main(int argc, char **argv)
 				local_port_conf.rx_adv_conf.rss_conf.rss_hf);
 		}
 
+		//端口配置
 		ret = rte_eth_dev_configure(portid, nb_rx_queue,
 					(uint16_t)n_tx_queue, &local_port_conf);
 		printf("-----------------端口id:%d,接收队列数：%d,发送队列数:%d\n",portid,nb_rx_queue,n_tx_queue);
@@ -924,7 +925,7 @@ main(int argc, char **argv)
 			rte_exit(EXIT_FAILURE,
 				 "Cannot adjust number of descriptors: err=%d, "
 				 "port=%d\n", ret, portid);
-
+		//获取网卡以太网地址
 		ret = rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE,
@@ -948,9 +949,9 @@ main(int argc, char **argv)
 			/* portid = 0; this is *not* signifying the first port,
 			 * rather, it signifies that portid is ignored.
 			 */
-			ret = init_mem(0, NB_MBUF(nb_ports));
+			ret = init_mem(0, NB_MBUF(nb_ports));//所有的端口共用一个pool
 		} else {
-			ret = init_mem(portid, NB_MBUF(1));
+			ret = init_mem(portid, NB_MBUF(1));//每个port一个pool
 		}
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "init_mem failed\n");
