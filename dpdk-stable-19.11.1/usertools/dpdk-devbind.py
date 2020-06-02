@@ -567,10 +567,9 @@ def display_devices(title, dev_list, extra_params=None):
     else:
         for dev in dev_list:
             if extra_params is not None:
-                strings.append("%s '%s %s' %s" % (dev["Slot"],
-                                               dev["Device_str"],
-                                               dev["Device"],
-                                               extra_params % dev))
+                strings.append("%s '%s %s' %s" % 
+                (dev["Slot"],dev["Device_str"],dev["Device"],extra_params % dev)
+                             )
             else:
                 strings.append("%s '%s'" % (dev["Slot"], dev["Device_str"]))
     # sort before printing, so that the entries appear in PCI order
