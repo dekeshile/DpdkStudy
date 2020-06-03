@@ -3092,7 +3092,7 @@ init_port_config(void)
 			port->dev_conf.rx_adv_conf.rss_conf.rss_hf =
 				rss_hf & port->dev_info.flow_type_rss_offloads;
 		} else {
-			port->dev_conf.rx_adv_conf.rss_conf.rss_key = rss_sym_key;  //NULL
+			port->dev_conf.rx_adv_conf.rss_conf.rss_key = NULL;  //NULL
 			port->dev_conf.rx_adv_conf.rss_conf.rss_hf = 0;
 		}
 

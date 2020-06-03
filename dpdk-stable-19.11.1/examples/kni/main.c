@@ -82,6 +82,9 @@
 
 //static int numa_on = 0; /**< NUMA is not enabled by default. */
 
+uint16_t nb_rx_queue = 1; /**< Number of RX queues per port. */
+uint16_t n_tx_queue = 1;//每个端口建立一个发送队列
+
 
 /*
  * Structure of port parameters
@@ -98,6 +101,13 @@ struct kni_port_params {
 
 static struct kni_port_params *kni_port_params_array[RTE_MAX_ETHPORTS];
 
+static uint8_t rss_sym_key[40] = {
+	0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+	0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+	0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+	0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+	0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+};
 
 /* Options for configuring ethernet port */
 static struct rte_eth_conf port_conf = {
@@ -254,7 +264,7 @@ kni_ingress(struct kni_port_params *p,uint16_t queueid )
 		return;
 	}
 	/* Burst tx to kni 
-		将网卡接收到的流量发给KNI设备 p->kni[i] 为与队列queueid对应的KNI网卡
+		将网卡接收到的流量发给KNI设备 p->kni[queueid] ,和网卡接收队列queueid对应
 	*/
 	num = rte_kni_tx_burst(p->kni[queueid], pkts_burst, nb_rx);
 	if (num)
@@ -310,12 +320,14 @@ kni_egress(struct kni_port_params *p)
 static int
 main_loop(__rte_unused void *arg)
 {
-	uint16_t i;
+	uint16_t j;
 	uint16_t queue_id;
+	uint16_t port_id;
 	int32_t f_stop;
 	int32_t f_pause;
 	const unsigned lcore_id = rte_lcore_id();
 	struct lcore_conf *qconf;
+
 	qconf = &lcore_conf[lcore_id];
 
 	if (qconf->n_rx_queue == 0) {
@@ -323,9 +335,6 @@ main_loop(__rte_unused void *arg)
 				return 0;
 	}
 
-	RTE_LOG(INFO, APP, "Lcore %u is reading from port %d\n",
-				kni_port_params_array[i]->lcore_rx,
-				kni_port_params_array[i]->port_id);
 	while (1) {
 		f_stop = rte_atomic32_read(&kni_stop);
 		f_pause = rte_atomic32_read(&kni_pause);
@@ -335,12 +344,12 @@ main_loop(__rte_unused void *arg)
 			continue;
 
 		//遍历当前核所负责的所有队列  
-		for (i = 0; i < qconf->n_rx_queue; ++i) {
-			queue_id = qconf->rx_queue_list[i].queue_id;	
-			port_id = 	qconf		
-			kni_ingress(kni_port_params_array[i],queue_id);
-
+		for (j = 0; j < qconf->n_rx_queue; ++j) {
+			port_id = qconf->rx_queue_list[j].port_id;
+			queue_id = qconf->rx_queue_list[j].queue_id;	
+			kni_ingress(kni_port_params_array[port_id],queue_id);
 		}
+	
 	}
 
 	return 0;
@@ -384,12 +393,9 @@ print_config(void)
 	for (i = 0; i < RTE_MAX_ETHPORTS; i++) {
 		if (!p[i])
 			continue;
-		RTE_LOG(DEBUG, APP, "Port ID: %d\n", p[i]->port_id);
-		RTE_LOG(DEBUG, APP, "Rx lcore ID: %u, Tx lcore ID: %u\n",
-					p[i]->lcore_rx, p[i]->lcore_tx);
+		printf("Port ID: %d\n", p[i]->port_id);
 		for (j = 0; j < p[i]->nb_lcore_k; j++)
-			RTE_LOG(DEBUG, APP, "Kernel thread lcore ID: %u\n",
-							p[i]->lcore_k[j]);
+			printf("queueid: %d , Kernel thread lcore ID: %u\n",j,p[i]->lcore_k[j]);
 	}
 }
 
@@ -410,8 +416,10 @@ parse_config(const char *arg)
 	unsigned long int_fld[_NUM_FLD];
 	uint16_t port_id, nb_kni_port_params = 0;
 	
-
 	memset(&kni_port_params_array, 0, sizeof(kni_port_params_array));
+	uint8_t lcore;
+	uint16_t nb_core_que = 0;
+
 	while (((p = strchr(p0, '(')) != NULL) &&
 		nb_kni_port_params < RTE_MAX_ETHPORTS) {
 		p++;
@@ -469,17 +477,24 @@ parse_config(const char *arg)
 			goto fail;
 		}
 		*/
-		uint8_t lcore;
-		uint16_t nb_rx_queue = 0;
+	    
+
 	//端口port_id对应的kni处理核，一个kni对应一个队列,对应一个核来处理
 		for (j = 0; i < nb_token && j < KNI_MAX_KTHREAD; i++, j++)
 		{
-			kni_port_params_array[port_id]->lcore_k[j] =
-						(uint8_t)int_fld[i];
 			lcore = (uint8_t)int_fld[i];
+			/*     --config="(0,0,1,2)"  
+			        (端口0 ，接收队列数0由核0处理，接收队列数0由核1处理，接收队列数0由核2处理)
+			         config除了第一个参数是port，
+					后面有几个参数就有几个队列，只是分配了对应下标的队列由哪个核处理(这里把第二个参数的下标看为0)
+			*/
+			kni_port_params_array[port_id]->lcore_k[j] = lcore;//这个kni由哪个核来处理,下标j是队列id,待会和kni_alloc里的kni[i]是对应的
+
+			nb_core_que = lcore_conf[lcore].n_rx_queue;
+			
 			//初始化核配置参数
-			lcore_conf[lcore].rx_queue_list[nb_rx_queue].port_id = port_id;
-			lcore_conf[lcore].rx_queue_list[nb_rx_queue].queue_id = j;
+			lcore_conf[lcore].rx_queue_list[nb_core_que].port_id = port_id;
+			lcore_conf[lcore].rx_queue_list[nb_core_que].queue_id = j;//也和kni[i]是对应的
 			lcore_conf[lcore].n_rx_queue++;
 		}
 			
@@ -631,7 +646,7 @@ init_port(uint16_t port)
 	fflush(stdout);
 
 	ret = rte_eth_dev_info_get(port, &dev_info);
-	printf("端口：%d默认的最大接收队列数：%d\n",port,dev_info.max_rx_queues);
+	printf("端口 %d 默认的最大接收队列数：%d\n",port,dev_info.max_rx_queues);
 	if (ret != 0)
 		rte_exit(EXIT_FAILURE,
 			"Error during getting device (port %u) info: %s\n",
@@ -641,20 +656,26 @@ init_port(uint16_t port)
 		local_port_conf.txmode.offloads |=
 			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 	
-	local_port_conf.rx_adv_conf.rss_conf.rss_hf &=
-			dev_info.flow_type_rss_offloads;
-	if (local_port_conf.rx_adv_conf.rss_conf.rss_hf !=
-				port_conf.rx_adv_conf.rss_conf.rss_hf) {
-			printf("Port %u modified RSS hash function based on hardware support,"
-				"requested:%#"PRIx64" configured:%#"PRIx64"\n",
-				port,
-				port_conf.rx_adv_conf.rss_conf.rss_hf,
-				local_port_conf.rx_adv_conf.rss_conf.rss_hf);
+	nb_rx_queue = p[port]->nb_lcore_k;
+
+	if (nb_rx_queue > 1) {
+		local_port_conf.rx_adv_conf.rss_conf.rss_key = rss_sym_key;  //NULL
+		local_port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
+		printf("端口 %d 配置的接收队列有 %d 个，开启RSS功能\n",port,nb_rx_queue);
+		if (local_port_conf.rx_adv_conf.rss_conf.rss_hf != port_conf.rx_adv_conf.rss_conf.rss_hf) 
+		{
+				printf("Port %u modified RSS hash function based on hardware support,"
+					"requested:%#"PRIx64" configured:%#"PRIx64"\n",
+					port,
+					port_conf.rx_adv_conf.rss_conf.rss_hf,
+					local_port_conf.rx_adv_conf.rss_conf.rss_hf);
 		}
-	
-	uint8_t nb_rx_queue = p[port]->nb_lcore_k;
-	printf("核%d对应的接收队列数%d\n",port,nb_rx_queue);
-	uint16_t n_tx_queue = 1;//每个端口建立一个发送队列
+	} else {
+		printf("端口 %d 配置的接收队列有 %d 个，没有开启RSS功能\n",port,nb_rx_queue);
+		local_port_conf.rx_adv_conf.rss_conf.rss_key = NULL;  //NULL
+		local_port_conf.rx_adv_conf.rss_conf.rss_hf = 0;
+	}
+
 	//配置dpdk网口的接收队列数和发送队列数
 	ret = rte_eth_dev_configure(port, nb_rx_queue, n_tx_queue, &local_port_conf);
 	if (ret < 0)
@@ -976,6 +997,8 @@ kni_alloc(uint16_t port_id)
 	params[port_id]->nb_kni = params[port_id]->nb_lcore_k ?
 				params[port_id]->nb_lcore_k : 1;
 
+	printf("有 %d 个 kni设备\n",params[port_id]->nb_kni);
+
 	for (i = 0; i < params[port_id]->nb_kni; i++) {
 		/* Clear conf at first */
 		memset(&conf, 0, sizeof(conf));
@@ -987,6 +1010,7 @@ kni_alloc(uint16_t port_id)
 		} else
 			snprintf(conf.name, RTE_KNI_NAMESIZE,
 						"vEth%u", port_id);
+		printf("kni name : %s\n",conf.name);
 		conf.group_id = port_id;
 		conf.mbuf_size = MAX_PACKET_SZ;
 		/*
@@ -1029,8 +1053,7 @@ kni_alloc(uint16_t port_id)
 			kni = rte_kni_alloc(pktmbuf_pool, &conf, NULL);
 
 		if (!kni)
-			rte_exit(EXIT_FAILURE, "Fail to create kni for "
-						"port: %d\n", port_id);
+			rte_exit(EXIT_FAILURE, "Fail to create kni for port: %d\n", port_id);
 		params[port_id]->kni[i] = kni;
 	}
 
