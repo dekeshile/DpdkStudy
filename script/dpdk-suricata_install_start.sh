@@ -55,6 +55,31 @@ load_igb_uio_module()
         fi   
 }
 
+#
+# Loads new rte_kni.ko 
+#
+load_kni_module()
+{
+        #检查是是否有rte_kni.ko这个模块
+        if [ ! -f $RTE_SDK/$RTE_TARGET/kmod/rte_kni.ko  ];then
+                echo "## ERROR: Target does not have the DPDK KNI Module."
+                echo "       To fix, please try to rebuild target."
+                return
+        fi
+
+        #先看 kni 模块是否之前被加载过，没加载过才进行加载
+        /sbin/lsmod | grep -s rte_kni > /dev/null
+        if [ $? -ne 0 ] ;
+        then
+            echo "Loading DPDK KNI module"
+            sudo /sbin/insmod $RTE_SDK/$RTE_TARGET/kmod/rte_kni.ko kthread_mode=multiple    #载入模块rte_kni.ko
+            if [ $? -ne 0 ] ; then
+                echo "## ERROR: Could not load kmod/rte_kni.ko."
+                quit
+            fi
+        fi
+}
+
 bind_back_kenel()
 {
         #找到没有被    [内核驱动]  和  [] igb_uio驱动]   绑定的网卡
@@ -133,20 +158,23 @@ set_non_numa_pages()
 
 
 #--------------------步骤从这里开始-------------------------------------------------------
+# 需准备好的文件
+#   igb_UIO模块 kmod/igb_uio.ko  
+#   KNI模块  kmod/rte_kni.ko
+#  可执行程序  dpdk-kni
 
-#不要进行选项 要进行傻瓜式的检查
-# 第一次编译，并且直接使用 安装dpdk和suricata
+
+# 部署并运行dpdk和suricata
 # 步骤：
 #  1.检查是否有dpdk进程正在运行
 #  2.检查是否有suricata进程正在运行
-#  3.先安装好dpdk
+#  3.dpdk环境部署
 #       1).设置dpdk环境变量
-#       1).编译安装dpdk
 #       2).设置大叶内存
-#       3).启用UIO
+#       3).启用igb_uio模块,启用KNI模块
 #       4).绑定网卡到驱动igb_uio上
-#  4.安装sricata
-#  5.启动dpdk-suricata
+#  4.启动dpdk-kni程序
+#  5.启动sricata程序
 #
 #
 #
@@ -157,11 +185,11 @@ if [ -n "$dpdk_pid" ];
 then
    echo "dpdk process is running [$dpdk_pid]"
 else
-   echo "start make dpdk........................."
+   echo "start set dpdk   enviroment........................."
 fi
 
 
-#---------------编译安装dpdk start----------------------------------------------------
+#--------------set dpdk enviroment start----------------------------------------------------
 
 #dpdk工作路径
 dpdk_wkdir=/home/wurp
@@ -171,15 +199,6 @@ RTE_SDK=${dpdk_wkdir}/dpdk-stable-19.11.1
 export RTE_SDK
 RTE_TARGET=x86_64-native-linuxapp-gcc
 export RTE_TARGET 
-
-
-#多核编译安装dpdk
-make -j install T=${RTE_TARGET}
-if [ $? -ne 0 ] 
-then
-    echo "Something error when make dpdk, exit"
-    exit
-fi
 
 
 #设置大叶内存
@@ -195,11 +214,13 @@ need_binds=(eth5 eth6)
 
 #检查是否存在这个网卡,存在则将其绑定igb_uio,不存在则退出
 for net_name in ${need_binds[@]};do
-    no_bind=$($RTE_SDK/usertools/dpdk-devbind.py --status | grep $net_name)
-    if [ $no_bind -eq 0 ]
+    ifconfig | grep $net_name
+    if [ $? -eq 0 ]
     then
         ifconfig $net_name down  #先关闭网卡
-        $RTE_SDK/usertools/dpdk-devbind.py --bind=igb_uio $net_name #绑定UIO模块到网卡
+         #绑定UIO模块到网卡
+         /home/wurp/dpdk-stable-19.11.1/usertools/dpdk-devbind.py --bind=igb_uio $net_name
+        echo "exec bind bind net done"
     else
         echo "can not find Interface:$net_name,Please check it"
         #因脚本中执行异常，恢复为原来的环境
@@ -211,13 +232,70 @@ done
 
 #验证网卡绑定igb_uio的情况
 for net_name in ${need_binds[@]};do
-    suc=$($RTE_SDK/usertools/dpdk-devbind.py --status | grep "if=$net_name drv=igb_uio")
-    if [ $suc -eq 0 ] ; then
-        echo "bind $net_name succuss !!"
-    else
-        echo "something error when bind Interface:$net_name ,check it "
+   # $RTE_SDK/usertools/dpdk-devbind.py --status | grep "if=$net_name drv=igb"
+    ifconfig | grep $net_name
+    if [ $?  -eq 0 ] ; then
+         echo "something error when bind Interface:$net_name ,check it "
         #因脚本中执行异常，恢复为原来的环境
         restore_env
         exit
+    else
+       echo "bind $net_name succuss !!"
     fi
 done
+
+#启用kni模块
+load_kni_module
+
+#启动dpdk程序
+make /home/wurp/dpdk-stable-19.11.1/examples/l3-kni.mengbo/l3-kni
+
+if [ $? -ne 0 ] ; then
+        echo "-----------make failed"
+		restore_env
+        exit
+    else
+        echo "-----------make success"
+fi
+
+chmod 777 /home/wurp/dpdk-stable-19.11.1/examples/l3-kni.mengbo/l3-kni/build/dpdk-capture
+ /home/wurp/dpdk-stable-19.11.1/examples/l3-kni.mengbo/l3-kni/build/dpdk-capture
+
+#dpdk没有启动成功，返回非0
+if [ $? -ne 0 ] ; then
+        echo "-----------dpdk run failed"
+		restore_env
+        exit
+fi
+
+#获取所有kni生成的网卡名，并把网卡名写入到suricata配置文件中
+kni_net=$(ifconfig | grep vEth | cut -d : -f 1 | tr -d ':')
+
+pcapYaml=${/usr/c_app/suricata/etc/pcap_dpdk.yaml}
+# 判断pcap.yaml 是否存在
+if [ ! -f "$pcapYaml" ]; then
+ touch "$pcapYaml"
+fi
+
+#写入pcap.yaml文件
+#先清空pcap.yaml文件
+echo "" >  $pcapYaml
+echo "pcap:" >> $pcapYaml
+for line in kni_net
+do 
+    echo "- interface: $line" >> $pcapYaml
+    echo "- buffer-size: 134217728" >> $pcapYaml
+    echo "- threads: auto" >> $pcapYaml
+done
+
+#---------------suricata start----------------------------------------------------
+suricata_pid=`ps -ef |grep suricata |grep -v grep|grep -v "start_suricata" | awk '{print $2}'`
+if [ ! -z "$suricata_pid" ]; 
+then
+   echo "suricata process is running [$suricata_pid]"
+else
+   echo "start suricata process..."
+   rm -rf /datadb/suricata/run/suricata.pid
+   /usr/c_app/suricata/suricata -c /usr/c_app/suricata/etc/suricata.yaml --pidfile /datadb/suricata/run/suricata.pid --pcap -D
+
+fi
