@@ -20,13 +20,22 @@ remove_igb_uio_module()
 #
 load_igb_uio_module()
 {
+        #先看 igb_uio 模块是否之前被加载过，没加载过才进行加载
+        #并且先解绑igb_uio绑定的网卡，将其邦回igb驱动
+        /sbin/lsmod | grep -s igb_uio > /dev/null
+        if [ $? -eq 0 ] ;
+        then
+              #绑回linux内核
+            bind_back_kenel
+            return
+        fi   
+
+         #是否有igb_uio.ko模块
         if [ ! -f $RTE_SDK/$RTE_TARGET/kmod/igb_uio.ko ];then
                 echo "## ERROR: Target does not have the DPDK UIO Kernel Module."
                 echo "       To fix, please try to rebuild target."
                 return
         fi
-
-       # remove_igb_uio_module
 
        #先看uio模块是否之前被加载过，没加载过才进行加载
         /sbin/lsmod | grep -s uio > /dev/null
@@ -38,21 +47,12 @@ load_igb_uio_module()
                 fi
         fi
 
-        #先看 igb_uio 模块是否之前被加载过，没加载过才进行加载
-        #并且先解绑igb_uio绑定的网卡，将其邦回igb驱动
-        /sbin/lsmod | grep -s igb_uio > /dev/null
-        if [ $? -ne 0 ] ;
-        then
-            echo "Loading DPDK UIO module"
-            sudo /sbin/insmod $RTE_SDK/$RTE_TARGET/kmod/igb_uio.ko     #载入模块igb_uio.ko 
-            if [ $? -ne 0 ] ; then
-                echo "## ERROR: Could not load kmod/igb_uio.ko."
-                quit
-            fi
-        else
-            #绑回linux内核
-            bind_back_kenel
-        fi   
+        echo "Loading DPDK UIO module"
+        sudo /sbin/insmod $RTE_SDK/$RTE_TARGET/kmod/igb_uio.ko     #载入模块igb_uio.ko 
+        if [ $? -ne 0 ] ; then
+            echo "## ERROR: Could not load kmod/igb_uio.ko."
+            quit
+        fi
 }
 
 #
@@ -82,11 +82,18 @@ load_kni_module()
 
 bind_back_kenel()
 {
-        #找到没有被    [内核驱动]  和  [] igb_uio驱动]   绑定的网卡
+        #找到没有被  [内核驱动igb] 和 [igb_uio驱动]   绑定的网卡
+        nodrive_net=$( $RTE_SDK/usertools/dpdk-devbind.py  -s | grep unused=igb,igb_uio  | awk '{print $1}')
+        for  echo_net in $nodrive_net
+        do
+	        $RTE_SDK/usertools/dpdk-devbind.py -b $HOST_DRIVE  $echo_net #绑回linux内核
+        done
+
+        #找到已经绑定 [igb_uio驱动] 网卡，将其绑回内核
         igbuio_device=$( $RTE_SDK/usertools/dpdk-devbind.py  -s | grep drv=igb_uio | awk '{print $1}')
         for  rci in $igbuio_device
         do
-	$RTE_SDK/usertools/dpdk-devbind.py -b $host_drive  $rci #绑回linux内核
+	        $RTE_SDK/usertools/dpdk-devbind.py -b $HOST_DRIVE  $rci #绑回linux内核
         done
 }
 
@@ -177,17 +184,18 @@ set_non_numa_pages()
 #  5.启动sricata程序
 #
 #
-#
-
+#  网卡本来绑定好igb_uio的网卡的，但是还没解绑，就又把igb_uio卸载，这时候原本的网卡会丢失驱动，导致unused=igb,igb_uio 
 #---------------检查是否有dpdk进程正在运行---------------
+
+
 dpdk_pid=$(ps -ef |grep dpdk |grep -v grep | awk '{print $2}')
 if [ -n "$dpdk_pid" ]; 
 then
    echo "dpdk process is running [$dpdk_pid]"
+   echo "if you want restart please run stop-dpdk-suricata.sh,then run this"
 else
    echo "start set dpdk   enviroment........................."
 fi
-
 
 #--------------set dpdk enviroment start----------------------------------------------------
 
@@ -206,11 +214,12 @@ HUGEPGSZ=$(cat /proc/meminfo  | grep Hugepagesize | cut -d : -f 2 | tr -d ' ')
 set_non_numa_pages
 
 #启用igb_uio模块,并解绑原绑定igb_uio的所有网卡
-host_drive=igb
+HOST_DRIVE=igb
 load_igb_uio_module
 
 #需要绑定到 igb_uio 的网卡
 need_binds=(eth5 eth6)
+
 
 #检查是否存在这个网卡,存在则将其绑定igb_uio,不存在则退出
 for net_name in ${need_binds[@]};do
@@ -220,7 +229,7 @@ for net_name in ${need_binds[@]};do
         ifconfig $net_name down  #先关闭网卡
          #绑定UIO模块到网卡
          /home/wurp/dpdk-stable-19.11.1/usertools/dpdk-devbind.py --bind=igb_uio $net_name
-        echo "exec bind bind net done"
+        echo "exec bind  net done"
     else
         echo "can not find Interface:$net_name,Please check it"
         #因脚本中执行异常，恢复为原来的环境
@@ -258,8 +267,8 @@ if [ $? -ne 0 ] ; then
         echo "-----------make success"
 fi
 
-chmod 777 /home/wurp/dpdk-stable-19.11.1/examples/l3-kni.mengbo/l3-kni/build/dpdk-capture
- /home/wurp/dpdk-stable-19.11.1/examples/l3-kni.mengbo/l3-kni/build/dpdk-capture
+chmod 777 /home/wurp/dpdk-stable-19.11.1/examples/l3-kni.mengbo/l3-kni/build/l3fwd
+nohup  /home/wurp/dpdk-stable-19.11.1/examples/l3-kni.mengbo/l3-kni/build/l3fwd > dpdk.log 2>&1 &
 
 #dpdk没有启动成功，返回非0
 if [ $? -ne 0 ] ; then
@@ -268,10 +277,36 @@ if [ $? -ne 0 ] ; then
         exit
 fi
 
-#获取所有kni生成的网卡名，并把网卡名写入到suricata配置文件中
-kni_net=$(ifconfig | grep vEth | cut -d : -f 1 | tr -d ':')
+flag=0
 
-pcapYaml=${/usr/c_app/suricata/etc/pcap_dpdk.yaml}
+#for i in `seq 1 100`
+for i in $(seq 1 10) 
+do
+    #获取所有kni生成的网卡名，并把网卡名写入到suricata配置文件中
+    kni_net=$(ifconfig -a | grep vEth | cut -d : -f 1 | tr -d ':')
+    if [ -z  "$kni_net" ]; then
+        sleep 1
+    else
+       flag=1
+       echo "find kni_net"
+       echo $kni_net
+       break
+    fi
+done
+
+if [ $flag -eq 0 ]; then
+    echo "can't find kni_net , quit"
+    exit
+fi
+
+
+#将虚拟网卡启动起来
+for each_net in $kni_net
+do
+    ifconfig $each_net up
+done
+
+pcapYaml="/usr/c_app/suricata/etc/pcap_dpdk.yaml"
 # 判断pcap.yaml 是否存在
 if [ ! -f "$pcapYaml" ]; then
  touch "$pcapYaml"
@@ -281,7 +316,7 @@ fi
 #先清空pcap.yaml文件
 echo "" >  $pcapYaml
 echo "pcap:" >> $pcapYaml
-for line in kni_net
+for line in $kni_net
 do 
     echo "- interface: $line" >> $pcapYaml
     echo "- buffer-size: 134217728" >> $pcapYaml
