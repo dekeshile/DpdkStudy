@@ -256,7 +256,7 @@ done
 #启用kni模块
 load_kni_module
 
-#启动dpdk程序
+#编译dpdk程序
 make /home/wurp/dpdk-stable-19.11.1/examples/l3-kni.mengbo/l3-kni
 
 if [ $? -ne 0 ] ; then
@@ -267,6 +267,7 @@ if [ $? -ne 0 ] ; then
         echo "-----------make success"
 fi
 
+#后台运行dpdk程序
 chmod 777 /home/wurp/dpdk-stable-19.11.1/examples/l3-kni.mengbo/l3-kni/build/l3fwd
 nohup  /home/wurp/dpdk-stable-19.11.1/examples/l3-kni.mengbo/l3-kni/build/l3fwd > dpdk.log 2>&1 &
 
@@ -279,7 +280,7 @@ fi
 
 flag=0
 
-#for i in `seq 1 100`
+
 for i in $(seq 1 10) 
 do
     #获取所有kni生成的网卡名，并把网卡名写入到suricata配置文件中
