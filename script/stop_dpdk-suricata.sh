@@ -59,9 +59,12 @@ restore_env()
     bind_back_kenel
 }
 
-#------------------------------stop dpdk -------------------------------
 
-dpdk_pid=$(ps -ef |grep dpdk |grep -v grep | awk '{print $2}')
+
+#------------------------------stop dpdk-suricata -------------------------------
+
+APP_NAME=l3fwd
+dpdk_pid=$(ps -ef |grep "/app/${APP_NAME}" |grep -v grep | awk '{print $2}')
 if [ -n "$dpdk_pid" ]; 
 then
    echo "dpdk process is running [$dpdk_pid]"
@@ -72,3 +75,15 @@ then
 else
    echo "there are no dpdk progarm is running.............................."
 fi
+
+#检查suricata是否正在运行
+suricata_pid=`ps -ef |grep "/usr/c_app/suricata/suricata*"  |grep -v grep| awk '{print $2}'`
+if [ ! -z "$suricata_pid" ]; 
+then
+   echo "suricata process is running [$suricata_pid],now stop it "
+   suricatasc /datadb/suricata/run/suricata-command.socket -c shutdown
+   echo "stop suricata success!!"
+else
+    echo "there are no suricata progarm is running.............................."
+fi
+ 

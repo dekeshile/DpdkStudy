@@ -163,6 +163,59 @@ set_non_numa_pages()
 	create_mnt_huge
 }
 
+function loop_exe()
+{
+    local ex_count=0
+    CMDLINE=$1
+    while true ; do
+        #command
+        sleep 1
+        echo The command is \"$CMDLINE\"
+        ${CMDLINE}
+        if [ $? == 0 ] ; then
+            echo The command execute OK!
+            break;
+        else
+            (( ex_count = ${ex_count} + 1 ))
+            echo ERROR : The command execute fialed! ex_count = ${ex_count}.
+        fi
+    done
+}
+
+#编译dpdk
+make_dpdk()
+{
+    make ./l3-kni.mengbo/l3-kni
+    if [ $? -ne 0 ] ; then
+            echo "-----------make failed"
+            restore_env
+            exit
+        else
+            echo "-----------make success"
+    fi
+}
+
+check_program_status()
+{
+    
+     #检查DPDK 的app 是否正在运行
+     dpdk_pid=$(ps -ef |grep "/app/${APP_NAME}" |grep -v grep | awk '{print $2}')
+    if [ -n "$dpdk_pid" ]; 
+    then
+    echo "dpdk process is running [$dpdk_pid]"
+    echo "if you want restart please run stop-dpdk-suricata.sh,then run this"
+    exit
+    fi
+
+    #检查suricata是否正在运行
+    suricata_pid=`ps -ef |grep "/usr/c_app/suricata/suricata*"  |grep -v grep| awk '{print $2}'`
+    if [ ! -z "$suricata_pid" ]; 
+    then
+        echo "suricata process is running [$suricata_pid],now restart it "
+        echo "if you want restart please run stop-dpdk-suricata.sh,then run this"
+        exit    
+    fi
+} 
 
 #--------------------步骤从这里开始-------------------------------------------------------
 # 需准备好的文件
@@ -187,15 +240,11 @@ set_non_numa_pages()
 #  网卡本来绑定好igb_uio的网卡的，但是还没解绑，就又把igb_uio卸载，这时候原本的网卡会丢失驱动，导致unused=igb,igb_uio 
 #---------------检查是否有dpdk进程正在运行---------------
 
+DPDK_APP_NAME=l3fwd
 
-dpdk_pid=$(ps -ef |grep dpdk |grep -v grep | awk '{print $2}')
-if [ -n "$dpdk_pid" ]; 
-then
-   echo "dpdk process is running [$dpdk_pid]"
-   echo "if you want restart please run stop-dpdk-suricata.sh,then run this"
-else
-   echo "start set dpdk   enviroment........................."
-fi
+check_program_status
+
+echo "start set dpdk   enviroment........................."
 
 #--------------set dpdk enviroment start----------------------------------------------------
 
@@ -257,19 +306,11 @@ done
 load_kni_module
 
 #编译dpdk程序
-make /home/wurp/dpdk-stable-19.11.1/examples/l3-kni.mengbo/l3-kni
-
-if [ $? -ne 0 ] ; then
-        echo "-----------make failed"
-		restore_env
-        exit
-    else
-        echo "-----------make success"
-fi
+#make_dpdk
 
 #后台运行dpdk程序
-chmod 777 /home/wurp/dpdk-stable-19.11.1/examples/l3-kni.mengbo/l3-kni/build/l3fwd
-nohup  /home/wurp/dpdk-stable-19.11.1/examples/l3-kni.mengbo/l3-kni/build/l3fwd > dpdk.log 2>&1 &
+chmod 777 ./app/${DPDK_APP_NAME}
+nohup  ./app/${DPDK_APP_NAME} > dpdk.log 2>&1 &
 
 #dpdk没有启动成功，返回非0
 if [ $? -ne 0 ] ; then
@@ -279,7 +320,6 @@ if [ $? -ne 0 ] ; then
 fi
 
 flag=0
-
 
 for i in $(seq 1 10) 
 do
@@ -300,11 +340,12 @@ if [ $flag -eq 0 ]; then
     exit
 fi
 
-
 #将虚拟网卡启动起来
 for each_net in $kni_net
 do
-    ifconfig $each_net up
+  #启动起来直到成功
+    loop_exe "ifconfig $each_net up"
+
 done
 
 pcapYaml="/usr/c_app/suricata/etc/pcap_dpdk.yaml"
@@ -316,6 +357,8 @@ fi
 #写入pcap.yaml文件
 #先清空pcap.yaml文件
 echo "" >  $pcapYaml
+echo "%YAML 1.1"  >> $pcapYaml
+echo "---"  >> $pcapYaml
 echo "pcap:" >> $pcapYaml
 for line in $kni_net
 do 
@@ -325,13 +368,8 @@ do
 done
 
 #---------------suricata start----------------------------------------------------
-suricata_pid=`ps -ef |grep suricata |grep -v grep|grep -v "start_suricata" | awk '{print $2}'`
-if [ ! -z "$suricata_pid" ]; 
-then
-   echo "suricata process is running [$suricata_pid]"
-else
-   echo "start suricata process..."
-   rm -rf /datadb/suricata/run/suricata.pid
-   /usr/c_app/suricata/suricata -c /usr/c_app/suricata/etc/suricata.yaml --pidfile /datadb/suricata/run/suricata.pid --pcap -D
+#启动新的suricata
+echo "start suricata process..."
+rm -rf /datadb/suricata/run/suricata.pid
+/usr/c_app/suricata/suricata -c /usr/c_app/suricata/etc/suricata.yaml --pidfile /datadb/suricata/run/suricata.pid --pcap -D
 
-fi

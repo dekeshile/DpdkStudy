@@ -1,0 +1,1 @@
+suricatasc /datadb/suricata/run/suricata-command.socket -c shutdown
