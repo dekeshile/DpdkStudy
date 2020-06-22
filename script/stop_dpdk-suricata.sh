@@ -37,17 +37,17 @@ clear_huge_pages()
 bind_back_kenel()
 {
         #找到没有被  [内核驱动igb] 和 [igb_uio驱动]   绑定的网卡
-        nodrive_net=$( $RTE_SDK/usertools/dpdk-devbind.py  -s | grep unused=igb,igb_uio  | awk '{print $1}')
+        nodrive_net=$( ./usertools/dpdk-devbind.py  -s | grep unused=igb,igb_uio  | awk '{print $1}')
         for  echo_net in $nodrive_net
         do
 	        $RTE_SDK/usertools/dpdk-devbind.py -b $HOST_DRIVE  $echo_net #绑回linux内核
         done
 
         #找到已经绑定 [igb_uio驱动] 网卡，将其绑回内核
-        igbuio_device=$( $RTE_SDK/usertools/dpdk-devbind.py  -s | grep drv=igb_uio | awk '{print $1}')
+        igbuio_device=$( ./usertools/dpdk-devbind.py  -s | grep drv=igb_uio | awk '{print $1}')
         for  rci in $igbuio_device
         do
-	        $RTE_SDK/usertools/dpdk-devbind.py -b $HOST_DRIVE  $rci #绑回linux内核
+	        ./usertools/dpdk-devbind.py -b $HOST_DRIVE  $rci #绑回linux内核
         done
 }
 
@@ -63,7 +63,7 @@ restore_env()
 
 #------------------------------stop dpdk-suricata -------------------------------
 
-APP_NAME=l3fwd
+APP_NAME=dpdk-capture
 dpdk_pid=$(ps -ef |grep "/app/${APP_NAME}" |grep -v grep | awk '{print $2}')
 if [ -n "$dpdk_pid" ]; 
 then
@@ -82,6 +82,7 @@ if [ ! -z "$suricata_pid" ];
 then
    echo "suricata process is running [$suricata_pid],now stop it "
    suricatasc /datadb/suricata/run/suricata-command.socket -c shutdown
+   sleep 3
    echo "stop suricata success!!"
 else
     echo "there are no suricata progarm is running.............................."
