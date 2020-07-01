@@ -148,7 +148,29 @@ restore_env()
     echo "restore previous enviroment"
     clear_huge_pages
     bind_back_kenel
+    stop_program
+    exit
 }
+
+stop_program()
+{
+    dpdk_pid=$(ps -ef |grep "/app/${APP_NAME}" |grep -v grep | awk '{print $2}')
+    if [ -n "$dpdk_pid" ]; 
+    then
+        echo "stop dpdk now"
+        kill -9 $dpdk_pid
+    fi
+
+    #检查suricata是否正在运行
+    suricata_pid=`ps -ef |grep "/usr/c_app/suricata/suricata*"  |grep -v grep| awk '{print $2}'`
+    if [ ! -z "$suricata_pid" ]; 
+    then
+         echo " stop suricata now "
+         suricatasc /datadb/suricata/run/suricata-command.socket -c shutdown
+         sleep 3
+    fi
+}
+
 
 #
 # Removes hugepage filesystem.
